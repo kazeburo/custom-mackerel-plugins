@@ -1,0 +1,92 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Digest::MD5 qw/md5_hex/;
+use File::Spec;
+
+sub cap_cmd {
+    my ($cmdref) = @_;
+    pipe my $logrh, my $logwh
+        or die "Died: failed to create pipe:$!\n";
+    my $pid = fork;
+    if ( ! defined $pid ) {
+        die "Died: fork failed: $!\n";
+    } 
+
+    elsif ( $pid == 0 ) {
+        #child
+        close $logrh;
+        open STDOUT, '>&', $logwh
+            or die "Died: failed to redirect STDOUT\n";
+        close $logwh;
+        exec @$cmdref;
+        die "Died: exec failed: $!\n";
+    }
+    close $logwh;
+    my $result;
+    while(<$logrh>){
+        $result .= $_;
+    }
+    close $logrh;
+    while (wait == -1) {}
+    my $exit_code = $?;
+    $exit_code = $exit_code >> 8;
+    return ($result, $exit_code);
+}
+
+my $identifier = "";
+my $critical = 1;
+Getopt::Long::Configure ("no_ignore_case");
+my $r = GetOptions(
+    'identifier=s' => \$identifier,
+    'c=i'        => \$critical,
+    "h|help"     => \my $help,
+);
+
+my @command = @ARGV;
+$|=1;
+
+if ( !$r || $help || !defined $critical || !@command) {
+    print qq!usage: $0 -c {num} [--identifier=..] -- command args1 args2 args3\n!;
+    exit($help ? 0 : 1);
+}
+
+my $comamnd_key = md5_hex($identifier,@command);
+my $tmpdir = File::Spec->tmpdir();
+
+my $counter_file = File::Spec->catfile($tmpdir, $<."-delay-checker-".$comamnd_key);
+my $count = 0;
+if ( -f $counter_file ) {
+    open(my $fh, '<', $counter_file) or die $!;
+    $count = <$fh>;
+    $count ||= 0;
+    $count = int($count);
+} else {
+    $count = 0;
+}
+(my $result, my $exit_code) = cap_cmd(\@command);
+if (! defined $result) {
+    $result = ""
+}
+chomp($result);
+chomp($result);
+
+if ( $exit_code == 0 ) {
+    unlink $counter_file if -f $counter_file;
+    print "$result\n";
+    exit($exit_code);
+}
+
+$count++;
+open(my $fh, '>', $counter_file) or die $!;
+print $fh sprintf("%-10d\n",$count);
+close($fh);
+if ( $count >= $critical ) {
+    print "DelayNG($count/$critical): $result\n";
+    exit($exit_code);
+}
+print "DelayWarn($count/$critical): $result\n";
+exit(0);
+

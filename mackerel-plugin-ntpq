@@ -1,0 +1,152 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use JSON;
+
+sub cap_cmd {
+    my ($cmdref) = @_;
+    pipe my $logrh, my $logwh
+        or die "Died: failed to create pipe:$!\n";
+    my $pid = fork;
+    if ( ! defined $pid ) {
+        die "Died: fork failed: $!\n";
+    } 
+
+    elsif ( $pid == 0 ) {
+        #child
+        close $logrh;
+        open STDOUT, '>&', $logwh
+            or die "Died: failed to redirect STDOUT\n";
+        close $logwh;
+        exec @$cmdref;
+        die "Died: exec failed: $!\n";
+    }
+    close $logwh;
+    my $result;
+    while(<$logrh>){
+        $result .= $_;
+    }
+    close $logrh;
+    while (wait == -1) {}
+    my $exit_code = $?;
+    $exit_code = $exit_code >> 8;
+    return ($result, $exit_code);
+}
+
+sub uptime {
+    my $self = shift;
+    my $uptime = 0;
+    open my $fh, '<', '/proc/uptime' or die "$!\n";
+    while (<$fh>) {
+        if (my @e = split /\s+/) {
+            $uptime = int($e[0]);
+            last;
+        }
+    }
+    close $fh;
+    $uptime;
+}
+
+my $TIME = time;
+sub metrix {
+    my ($key,$val) = @_;
+    print $key . "\t" . $val . "\t" . $TIME . "\n";
+}
+
+sub ntpq {
+    (my $result,my $exit_code) = cap_cmd(["/usr/sbin/ntpq","-pn"]);
+    if ( $exit_code != 0 ) {
+        return (0,-1);
+    }
+    my $synced = 0;
+    my $offset;
+    for (split /\n/,$result) {
+        if ( m!^\*\d+\.\d+\.\d+\.\d+\s! || m!^\*[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+\s! ) {
+            $synced++;
+            my @l = split /\s+/;
+            $offset = abs($l[8]);
+            last;
+        }
+    }
+
+    # 起動から30分、1秒以内だったらOKにする
+    my $uptime = uptime();
+    if ( $uptime < 60*30 && $offset < 1000 ) {
+        $offset = $offset * -1;
+    }
+    return ($synced, $offset);
+}
+
+sub chronyc {
+    (my $result,my $exit_code) = cap_cmd(["/usr/bin/chronyc","-n","sources"]);
+    if ( $exit_code != 0 ) {
+        return (0, -1);
+    }
+
+    my $synced = 0;
+    my $offset;
+    for (split /\n/,$result) {
+        if ( m!^\^\*\s*(?:\d+\.\d+\.\d+\.\d+|[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+).+?(\d+)(ns|us|ms|s)$! ) {
+            $synced++;
+            $offset = $1;
+            my $unit = $2;
+            if ( $unit eq "ns" ) {
+                $offset = $offset / (1000 * 1000);
+            } elsif ( $unit eq "us" ) {
+                $offset = $offset / 1000;
+            } elsif ( $unit eq "ms" ) {
+                #none
+            } else {
+                $offset = $offset * 1000;
+            }
+            last;
+        }
+    }
+    # 起動から30分、1秒以内だったらOKにする
+    my $uptime = uptime();
+    if ( $uptime < 60*30 && $offset < 1000 ) {
+        $offset = $offset * -1;
+    }
+    return ($synced, $offset);
+}
+
+if ( $ENV{MACKEREL_AGENT_PLUGIN_META} ) {
+    my $meta = {
+        "graphs" => {
+            "ntpq.synced" => {
+                "label" => 'NTP synced remote',
+                "unit"  => 'integer',
+                "metrics" => [
+                    {
+                        name => "remote",
+                        label => "number of remote host",
+                        diff => JSON::false,
+                        stacked => JSON::false
+                    },
+                ]
+            },
+            "ntpq.offset" => {
+                "label" => 'NTP offset',
+                "unit"  => 'float',
+                "metrics" => [
+                    {
+                        name => "seconds",
+                        label => "abs milliseconds",
+                        diff => JSON::false,
+                        stacked => JSON::false
+                    },
+                ]
+            },
+        }
+    };
+    print "# mackerel-agent-plugin\n";
+    print encode_json($meta) . "\n";
+}
+else {
+    my ($synced, $offset) = -x "/usr/sbin/ntpq" ? ntpq() : chronyc();
+    metrix("ntpq.synced.remote", $synced);
+    metrix("ntpq.offset.seconds",$offset);
+}
+
+

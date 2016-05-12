@@ -1,0 +1,49 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+
+sub slurp_integer {
+    my $file = shift;
+    open my $fh, '<', $file or die "$!\n";
+    my $ret;
+    while (<$fh>) {
+        $ret .= $_;
+    }
+    return int($ret);
+}
+
+Getopt::Long::Configure ("no_ignore_case");
+GetOptions(
+    'w=i' => \my $warnings,
+    'c=i' => \my $critical,
+    "h|help"     => \my $help,
+);
+
+if ( $help || (!defined $warnings && !defined $critical) ) {
+    print qq!usage: $0 -w . -c .\n!;
+    exit($help ? 0 : 1);
+}
+
+my $max = slurp_integer('/proc/sys/net/netfilter/nf_conntrack_max');
+my $count = slurp_integer('/proc/sys/net/netfilter/nf_conntrack_count');
+my $free = $max - $count;
+
+if ( defined $critical && $free < $critical ) {
+    print "CRITICAL: free nf_conntrack < $critical | free:$free max:$max count:$count\n";
+    exit 2;
+}
+
+if ( defined $warnings && $free < $warnings ) {
+    print "WARNING: free nf_conntrack < $warnings | free:$free max:$max count:$count\n";
+    exit 1;
+}
+
+
+print "OK: free:$free max:$max count:$count\n";
+exit 0;
+
+
+
+

@@ -1,0 +1,306 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Storable;
+use JSON;
+use File::Spec;
+
+sub cap_cmd {
+    my ($cmdref) = @_;
+    pipe my $logrh, my $logwh
+        or die "Died: failed to create pipe:$!\n";
+    my $pid = fork;
+    if ( ! defined $pid ) {
+        die "Died: fork failed: $!\n";
+    } 
+
+    elsif ( $pid == 0 ) {
+        #child
+        close $logrh;
+        open STDOUT, '>&', $logwh
+            or die "Died: failed to redirect STDOUT\n";
+        close $logwh;
+        exec @$cmdref;
+        die "Died: exec failed: $!\n";
+    }
+    close $logwh;
+    my $result;
+    while(<$logrh>){
+        $result .= $_;
+    }
+    close $logrh;
+    while (wait == -1) {}
+    my $exit_code = $?;
+    $exit_code = $exit_code >> 8;
+    return ($result, $exit_code);
+}
+
+sub to_byte {
+    my $s = shift;
+    my $b = 0;
+
+    ($s) = ($s =~ /^\s*(.+?)\s*$/); # trim
+
+    if ($s =~ /^[0-9]+$/) {
+        $b = $s;
+    } elsif ($s =~ /^([0-9]+)\s*([a-zA-Z]+)$/) {
+        $b = $1;
+        my $u = lc $2;
+        if ($u eq 'kb') {
+            $b = $b * 1024;
+        } elsif ($u eq 'mb') {
+            $b = $b * 1024 * 1024;
+        } elsif ($u eq 'gb') {
+            $b = $b * 1024 * 1024 * 1024;
+        } elsif ($u eq 'tb') {
+            $b = $b * 1024 * 1024 * 1024 * 1024;
+        } else {
+            warnf("Unknown unit: %s", $u);
+        }
+    } else {
+        warnf("Failed to convert into as byte: %s", $s);
+    }
+
+    return $b;
+}
+
+my $TIME = time;
+sub metrix {
+    my ($key,$val) = @_;
+    print $key . "\t" . $val . "\t" . $TIME . "\n";
+}
+
+sub available_memory {
+    open my $fh, '<:utf8', '/proc/meminfo' or die "$!\n";
+    my %meminfo;
+    while (<$fh>) {
+        chomp;chomp;
+        my($key, $val) = split /[\s:]+/, $_, 2;
+        next unless $key;
+        $meminfo{$key} = to_byte($val);
+    }
+    close $fh;
+    my $available = $meminfo{MemFree} + $meminfo{Cached} + $meminfo{Inactive};
+    metrix("linux-lite.memory.avail", $available);
+}
+
+sub processors {
+    my $self = shift;
+    my $processors = 0;
+    open my $fh, '<', '/proc/cpuinfo' or die "$!\n";
+    while (<$fh>) {
+        $processors++ if m!^processor\s*:!
+    }
+    close $fh;
+    return $processors;
+}
+
+sub loadavg {
+    my $processors = processors();
+    open my $fh, '<', '/proc/loadavg' or die "$!\n";
+    my $loadavg = 0;
+    while (<$fh>) {
+        if (my @e = split /\s+/) {
+            $loadavg = $e[0];
+            last;
+        }
+    }
+    close $fh;
+    metrix("linux-lite.loadavg.per-cpu",$loadavg / $processors);
+}
+
+sub processes {
+    (my $result,my $exit_code) = cap_cmd(["ps","axwwo","pid,state"]);
+    my $all = 0;
+    my $running = 0;
+    for (split /\n/,$result) {
+        if ( m!^\s*(\d+)\s+(\w+)$! ) {
+            $all++;
+            $running++ if $2 eq "R";
+        }
+    }
+    metrix("linux-lite.process.all", $all);
+    metrix("linux-lite.process.running", $running);
+}
+
+sub uptime {
+    my $uptime = 0;
+    open my $fh, '<', '/proc/uptime' or die "$!\n";
+    while (<$fh>) {
+        if (my @e = split /\s+/) {
+            $uptime = int($e[0]);
+            last;
+        }
+    }
+    close $fh;
+    $uptime;
+}
+
+sub cpu_usage {
+    open my $fh, '<', '/proc/stat' or die "$!\n";
+    my @keys = qw(cpu-user cpu-nice cpu-system cpu-idle cpu-iowait cpu-irq cpu-softirq cpu-steal cpu-guest cpu-guest-nice);
+    my %cur;
+    while (<$fh>) {
+        if (/^cpu\s+/) {
+            chomp;
+            my(undef, @t) = split /\s+/;
+            for my $k (@keys) {
+                my $v = shift @t;
+                $cur{$k} = int(defined $v ? $v : 0);
+            }
+            last;
+        }
+    }
+    close $fh;
+    my $prev_file = File::Spec->catfile(File::Spec->tmpdir,"mackerel-plugin-linux-lite-cpu-usage.dat");
+    if ( ! -f $prev_file ) {
+        store(\%cur,$prev_file);
+        return;
+    }
+    my $prev = retrieve($prev_file);
+    my %gap;
+    my $total = 0;
+    for my $k (@keys) {
+        $gap{$k} = (defined $cur{$k} ? $cur{$k} : 0) - (defined $prev->{$k} ? $prev->{$k} : 0);
+        $gap{$k} = 0 if $gap{$k} < 0;
+        if ( $k eq 'cpu-steal' && uptime() < 180 ) {
+            # 起動時にstealが高く出る傾向があるので3分間は 0 にしてしまう
+            $gap{$k} = 0;
+        }
+        $total += $gap{$k};
+    }
+    for my $k (@keys) {
+        metrix("linux-lite.cpu-usage.".$k, $gap{$k}/$total*100) if $total;
+    }
+    store(\%cur,$prev_file);
+}
+
+
+if ( $ENV{MACKEREL_AGENT_PLUGIN_META} ) {
+
+    my $meta = {
+        "graphs" => {
+            "linux-lite.memory" => {
+                "label" => 'LinuxLite Available memory',
+                "unit"  => 'bytes',
+                "metrics" => [
+                    {
+                        name => "avail",
+                        label => "avaiable memory",
+                        stacked=> JSON::false,
+                        diff => JSON::false,
+                    },
+                ]
+            },
+            "linux-lite.loadavg" => {
+                "label" => 'LinuxLite Load Average per CPU',
+                "unit"  => 'float',
+                "metrics" => [
+                    {
+                        name => "per-cpu",
+                        label => "load average",
+                        stacked=> JSON::false,
+                        diff => JSON::false,
+                    },
+                ]
+            },
+            "linux-lite.process" => {
+                "label" => 'LinuxLite Number of Processes',
+                "unit"  => 'integer',
+                "metrics" => [
+                    {
+                        name => "all",
+                        label => "all",
+                        stacked=> JSON::false,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "running",
+                        label => "running",
+                        stacked=> JSON::false,
+                        diff => JSON::false,
+                    },
+                ]
+            },
+            "linux-lite.cpu-usage" => {
+                "label" => 'LinuxLite CPU Usage max 100%',
+                "unit"  => 'float',
+                "metrics" => [reverse((
+                    {
+                        name => "cpu-user",
+                        label => "user",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-nice",
+                        label => "nice",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-system",
+                        label => "system",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-idle",
+                        label => "idle",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-iowait",
+                        label => "iowait",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-irq",
+                        label => "irq",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-softirq",
+                        label => "softirq",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-steal",
+                        label => "steal",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-guest",
+                        label => "guest",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    },
+                    {
+                        name => "cpu-guest-nice",
+                        label => "guest-nice",
+                        stacked => JSON::true,
+                        diff => JSON::false,
+                    }
+               ))]
+            },
+        }
+    };
+    print "# mackerel-agent-plugin\n";
+    print encode_json($meta) . "\n";
+}
+else {
+    available_memory();
+    loadavg();
+    processes();
+    cpu_usage();
+}
+
+
+
+

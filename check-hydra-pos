@@ -1,0 +1,77 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use LWP::UserAgent;
+use JSON;
+use File::Spec;
+use Storable;
+
+sub exit_with_msg {
+    my ($msg, $status) = @_;
+    print "$msg\n";
+    exit($status);
+}
+
+my $warnings = 1;
+my $critical = 1;
+my $host = '127.0.0.1';
+my $port = 24200;
+Getopt::Long::Configure ("no_ignore_case");
+my $r = GetOptions(
+    'w=i'     => \$warnings,
+    'c=i'     => \$critical,
+    'file=s'  => \my $file,
+    'port=s'  => \$port,
+    'host=s'  => \$host,
+    "h|help"  => \my $help,
+);
+
+if ( !$r || $help || !defined $file ) {
+    print qq!usage: $0 -w age -c age --file=/path/to/log/file\n!;
+    exit($help ? 0 : 1);
+}
+
+my $endpoint = "http://$host:$port/";
+my $ua = LWP::UserAgent->new;
+
+my $res = $ua->get($endpoint);
+exit_with_msg("NG: failed to retrive $endpoint: ".$res->status_line,1) unless $res->is_success;
+
+my $data = JSON::decode_json($res->content);
+exit_with_msg("NG: hydra does not tail $file",1) unless exists $data->{files}->{$file}->{position};
+
+my %cur;
+$cur{_time_} = time();
+$cur{position} = $data->{files}->{$file}->{position} || 0;
+
+my $escaped_file = $file;
+$escaped_file =~ s!/!-!g;
+my $prev_file = File::Spec->catfile(File::Spec->tmpdir,$<."-check-hydra-pos-${escaped_file}.dat");
+if ( ! -f $prev_file ) {
+    store(\%cur,$prev_file);
+    print "OK: first time check\n";
+    exit 0;
+}
+
+my $prev = retrieve($prev_file);
+if ( !$prev->{_time_} ) {
+    die "failed to retrieve _time_";
+}
+my $period = $cur{_time_} - $prev->{_time_};
+my $diff = ($cur{position} || 0) - ($prev->{position} || 0);
+$diff = 0 if $diff < 0;
+
+my $per_sec = $diff / $period;
+
+store(\%cur,$prev_file);
+
+if ( $per_sec < $critical ) {
+    exit_with_msg("CRITICAL: $per_sec position-updated/sec less than $critical ($file)",2);
+}
+elsif ( $per_sec < $warnings ) {
+    exit_with_msg("WARNING: $per_sec position-updated/sec less than $warnings ($file)",1);
+}
+
+exit_with_msg("OK: $per_sec position-updated/sec ($file)",0);

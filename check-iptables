@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+
+if ( ip addr | grep 'inet ' | fgrep -v 'inet 127.0.0.1' | grep -v -E '^ *inet (10\.|192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.)' > /dev/null 2>&1 ); then
+  if ( lsmod |egrep 'ip6?table_filter' > /dev/null 2>&1 ); then
+    echo "OK: have global-ip and iptables(iptable_filter) is enabled"
+    exit 0
+  else
+    echo "NG: have global-ip. but iptables(iptable_filter) is disabled"
+    exit 2
+  fi
+else
+  if ( lsmod |egrep 'ip6?table_filter' > /dev/null 2>&1); then
+    echo "NG: does not have global-ip. but iptables(iptable_filter) is enabled"
+    exit 2
+  else
+    echo "OK: does not have global-ip and iptables(iptable_filter) is disabled"
+    exit 0
+  fi
+fi
+

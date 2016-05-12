@@ -1,0 +1,57 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+
+sub uptime {
+    my $self = shift;
+    my $uptime = 0;
+    open my $fh, '<', '/proc/uptime' or die "$!\n";
+    while (<$fh>) {
+        if (my @e = split /\s+/) {
+            $uptime = int($e[0]);
+            last;
+        }
+    }
+    close $fh;
+    $uptime;
+}
+
+sub uptime2str {
+    my $uptime = shift;
+    my $day = int( $uptime /86400 );
+    my $hour = int( ( $uptime % 86400 ) / 3600 );
+    my $min = int( ( ( $uptime % 86400 ) % 3600) / 60 );
+    sprintf("up %d days, %2d:%02d", $day, $hour, $min);
+}
+
+
+Getopt::Long::Configure ("no_ignore_case");
+GetOptions(
+    'w=i' => \my $warnings,
+    'c=i' => \my $critical,
+    "h|help"     => \my $help,
+);
+
+if ( $help || (!defined $warnings && !defined $critical) ) {
+    print qq!usage: $0 -w . -c .\n!;
+    exit($help ? 0 : 1);
+}
+my $uptime = uptime();
+if ( defined $critical && $uptime < $critical ) {
+    print "CRITICAL: uptime is less than $critical | " . uptime2str($uptime) . "\n";
+    exit 2;
+}
+
+if ( defined $warnings && $uptime < $warnings ) {
+    print "WARNING: uptime is less than $warnings | " . uptime2str($uptime) . "\n";
+    exit 1;
+}
+
+
+print "OK: ".uptime2str($uptime)."\n";
+exit 0;
+
+
+

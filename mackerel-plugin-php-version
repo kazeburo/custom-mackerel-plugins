@@ -1,0 +1,26 @@
+#!/usr/bin/env php
+<?php
+
+function metrix($key,$val) {
+    echo $key . "\t" . $val . "\t" . time() . "\n";
+}
+
+
+if ( getenv('MACKEREL_AGENT_PLUGIN_META') ) {
+    echo "# mackerel-agent-plugin\n";
+    echo '{"graphs":{
+    "php.version":{
+        "label":"PHP Version",
+        "unit":"integer",
+        "metrics":[{
+            "name":"version",
+            "label":"version"
+        }]
+    }
+}}'."\n";
+}
+else {
+    metrix("php.version.version", PHP_VERSION_ID);
+}
+
+

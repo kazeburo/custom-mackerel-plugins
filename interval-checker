@@ -1,0 +1,79 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Digest::MD5 qw/md5_hex/;
+use File::Spec;
+
+sub cap_cmd {
+    my ($cmdref) = @_;
+    pipe my $logrh, my $logwh
+        or die "Died: failed to create pipe:$!\n";
+    my $pid = fork;
+    if ( ! defined $pid ) {
+        die "Died: fork failed: $!\n";
+    } 
+
+    elsif ( $pid == 0 ) {
+        #child
+        close $logrh;
+        open STDOUT, '>&', $logwh
+            or die "Died: failed to redirect STDOUT\n";
+        close $logwh;
+        exec @$cmdref;
+        die "Died: exec failed: $!\n";
+    }
+    close $logwh;
+    my $result;
+    while(<$logrh>){
+        $result .= $_;
+    }
+    close $logrh;
+    while (wait == -1) {}
+    my $exit_code = $?;
+    $exit_code = $exit_code >> 8;
+    return ($result, $exit_code);
+}
+
+my $identifier = "";
+my $interval = 1;
+Getopt::Long::Configure ("no_ignore_case");
+my $r = GetOptions(
+    'identifier=s' => \$identifier,
+    'interval=i'   => \$interval,
+    "h|help"       => \my $help,
+);
+
+my @command = @ARGV;
+$|=1;
+
+if ( !$r || $help || !defined $interval || !@command) {
+    print qq!usage: $0 --inteval {sec} [--identifier=..] -- command args1 args2 args3\n!;
+    exit($help ? 0 : 1);
+}
+
+my $comamnd_key = md5_hex($identifier,@command);
+my $tmpdir = File::Spec->tmpdir();
+
+my $prev_file = File::Spec->catfile($tmpdir, $<."-delay-checker-".$comamnd_key);
+if ( -f $prev_file ) {
+    if ( time - [stat($prev_file)]->[9] < $interval ) {
+        open(my $fh, '<', $prev_file) or die;
+        while (<$fh>) {
+            print $_;
+        }
+        exit 0;
+    }
+    unlink $prev_file;
+}
+
+(my $result, my $exit_code) = cap_cmd(\@command);
+if ( $exit_code == 0 ) {
+    open(my $fh, '>', $prev_file) or die;
+    print $fh $result;
+    close $fh;
+}
+
+print $result;
+exit $exit_code;

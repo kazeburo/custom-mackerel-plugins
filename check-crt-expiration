@@ -1,0 +1,56 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Time::Local qw/timelocal/;
+
+my $warnings = 7;
+my $critical = 5;
+Getopt::Long::Configure ("no_ignore_case");
+GetOptions(
+    'w=i' => \$warnings,
+    'c=i' => \$critical,
+    'f=s' => \my $file,
+    "h|help"     => \my $help,
+);
+
+
+if ( $help || !defined $file) {
+    print qq!usage: $0 -w day -c day -f /path/to/secret.pem\n!;
+    exit($help ? 0 : 1);
+}
+
+open( my $pipe, "-|", "openssl", "x509", "-noout", "-dates","-in", $file) or die $!;
+my $expiration_date;
+while (<$pipe>) {
+    if ( m!^notAfter=(.+)$! ) {
+        $expiration_date = $1;
+    }
+}
+close($pipe);
+die "could not retrive expiration date" unless $expiration_date;
+
+my $i=0;
+my %mon = map { ($_=>$i++) } qw/Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec/;
+
+# Not After : Oct 27 09:49:54 2017 GMT
+#  $time = timelocal( $sec, $min, $hour, $mday, $mon, $year );
+die "could not parse date: $expiration_date" unless ( $expiration_date =~ m!^(\w{3})\s+(\d{1,2})\s(\d{2}):(\d{2}):(\d{2})\s(\d{4})\sGMT! );
+die "could not parse date: $expiration_date" unless exists $mon{$1};
+my $time = timelocal( $5+0, $4+0, $3+0, $2, $mon{$1}, $6-1900);
+die "could not parse date: $expiration_date" unless $time;
+
+my $remain_day = int(($time - time)/86400);
+
+if ( $remain_day < $critical ) {
+    print "CRITICAL: Expiration date: '$expiration_date'. $remain_day days left\n";
+    exit 2;
+}
+elsif ( $remain_day < $warnings ) {
+    print "WARNING: Expiration date: '$expiration_date'. $remain_day days left\n";
+    exit 1;
+}
+
+print "OK: Expiration date: '$expiration_date'. $remain_day days left\n";
+exit(0);

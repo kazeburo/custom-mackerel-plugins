@@ -1,0 +1,40 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+
+sub exit_with_msg {
+    my ($msg, $status) = @_;
+    print "$msg\n";
+    exit($status);
+}
+
+my $warnings = 2;
+my $critical = 2;
+Getopt::Long::Configure ("no_ignore_case");
+my $r = GetOptions(
+    'w=i'        => \$warnings,
+    'c=i'        => \$critical,
+    'host=s'   => \my $host,
+    "h|help"     => \my $help,
+);
+
+if ( !$r || $help || !defined $host) {
+    print qq!usage: $0 -w num -c num --host=production.example.service.us.consul\n!;
+    exit($help ? 0 : 1);
+}
+
+my @h = gethostbyname($host);
+my $ret = @h - 4;
+$ret = 0 if $ret < 0;
+
+if ( $ret < $critical ) {
+    exit_with_msg("CRITICAL: $ret dns-rr hosts found < $critical",2);
+}
+elsif ( $ret < $warnings ) {
+    exit_with_msg("WARNING: $ret dns-rr hosts found < $warnings",1);
+}
+
+exit_with_msg("OK: $ret dns-rr hosts found",0);
+

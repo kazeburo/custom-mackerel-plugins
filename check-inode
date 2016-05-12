@@ -1,0 +1,82 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+
+sub cap_cmd {
+    my ($cmdref) = @_;
+    pipe my $logrh, my $logwh
+        or die "Died: failed to create pipe:$!\n";
+    my $pid = fork;
+    if ( ! defined $pid ) {
+        die "Died: fork failed: $!\n";
+    }
+
+    elsif ( $pid == 0 ) {
+        #child
+        close $logrh;
+        open STDOUT, '>&', $logwh
+            or die "Died: failed to redirect STDOUT\n";
+        close $logwh;
+        exec @$cmdref;
+        die "Died: exec failed: $!\n";
+    }
+    close $logwh;
+    my $result;
+    while(<$logrh>){
+        $result .= $_;
+    }
+    close $logrh;
+    while (wait == -1) {}
+    my $exit_code = $?;
+    $exit_code = $exit_code >> 8;
+    return ($result, $exit_code);
+}
+
+Getopt::Long::Configure ("no_ignore_case");
+GetOptions(
+    'w=i' => \my $warnings,
+    'c=i' => \my $critical,
+    "h|help"     => \my $help,
+);
+
+if ( $help || !defined $warnings || !defined $critical ) {
+    print qq!usage: $0 -w . -c .\n!;
+    exit($help ? 0 : 1);
+}
+
+my ($result, $exit_code) = cap_cmd(['df','-i']);
+die "failed to exec df\n" if $exit_code != 0;
+my $is_critical;
+my $is_warnings;
+my @inodes;
+for ( split /\n/, $result ) {
+    chomp;chomp;
+    my @d = split /\s+/, $_;
+    next unless $d[5];
+    next if $d[0] =~ m!Filesystem!;
+    $d[4] =~ s!%$!!gi;
+    $is_warnings = $d[5] if $d[4] >= $warnings;
+    $is_critical = $d[5] if $d[4] >= $critical;
+    push @inodes, "$d[5]:$d[4]\%";
+}
+
+my $inodes = join ", ", @inodes;
+
+if ( defined $is_critical ) {
+    print "CRITICAL: used inode more than $critical\% on volume $is_critical | $inodes\n";
+    exit 2;
+}
+
+if ( defined $is_warnings ) {
+    print "WARNINGS: used inode more than $warnings\% on volume $is_warnings | $inodes\n";
+    exit 1;
+}
+
+
+print "OK: $inodes\n";
+exit 0;
+
+
+

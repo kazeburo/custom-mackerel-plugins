@@ -1,0 +1,85 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+sub cap_cmd {
+    my ($cmdref) = @_;
+    pipe my $logrh, my $logwh
+        or die "Died: failed to create pipe:$!\n";
+    my $pid = fork;
+    if ( ! defined $pid ) {
+        die "Died: fork failed: $!\n";
+    } 
+
+    elsif ( $pid == 0 ) {
+        #child
+        close $logrh;
+        open STDOUT, '>&', $logwh
+            or die "Died: failed to redirect STDOUT\n";
+        close $logwh;
+        exec @$cmdref;
+        die "Died: exec failed: $!\n";
+    }
+    close $logwh;
+    my $result;
+    while(<$logrh>){
+        $result .= $_;
+    }
+    close $logrh;
+    while (wait == -1) {}
+    my $exit_code = $?;
+    $exit_code = $exit_code >> 8;
+    return ($result, $exit_code);
+}
+
+my $TIME = time;
+sub metrix {
+    my ($key,$val) = @_;
+    print $key . "\t" . $val . "\t" . $TIME . "\n";
+}
+
+sub plugin_meta {
+    my $meta = shift;
+    require JSON;
+    print "# mackerel-agent-plugin\n";
+    print JSON::encode_json($meta) . "\n";
+    exit(0);
+}
+
+sub mailq {
+    (my $result,my $exit_code) = cap_cmd(["/usr/bin/mailq"]);
+    return if $exit_code != 0;
+    my $queue = 0;
+    for (split /\n/,$result) {
+        next if m!Mail queue is empty!;
+        $queue++ if m!^[0-9A-Z]!;
+    }
+    metrix("postfix.mailq.queue", $queue);
+}
+
+
+if ( $ENV{MACKEREL_AGENT_PLUGIN_META} ) {
+    my $meta = {
+        "graphs" => {
+            "postfix.mailq" => {
+                "label" => 'Postfix Queue',
+                "unit"  => 'integer',
+                "metrics" => [
+                    {
+                        name => "queue",
+                        label => "msgs in queue"
+                    },
+                ]
+            },
+        }
+    };
+    plugin_meta($meta);
+}
+else {
+    mailq();
+}
+
+
+
+

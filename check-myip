@@ -1,0 +1,21 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use IO::Socket::INET;
+
+sub check_myip {
+    my $proxy = shift;
+    my $sock = IO::Socket::INET->new(
+        PeerAddr => $proxy,
+        PeerPort => 18778,
+        Proto    => 'tcp'
+    ) or die "cound not connect to $proxy: $!";
+    return $sock->sockhost;
+}
+if ( @ARGV < 2 ) {
+   print "usage: $0 host port\n";
+   exit 1;
+}
+my $host = check_myip($ARGV[0],$ARGV[1]);
+print "$host\n";

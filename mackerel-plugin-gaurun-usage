@@ -1,0 +1,65 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use JSON;
+use LWP::UserAgent;
+use Getopt::Long;
+
+my $TIME = time;
+sub metrix {
+    my ($key,$val) = @_;
+    print $key . "\t" . $val . "\t" . $TIME . "\n";
+}
+
+sub plugin_meta {
+    my $meta = shift;
+    print "# mackerel-agent-plugin\n";
+    print JSON::encode_json($meta) . "\n";
+    exit(0);
+}
+
+sub gaurun_queue_usage {
+    my ($port) = @_;
+    my $ua = LWP::UserAgent->new;
+    my $res = $ua->get(sprintf("http://%s:%s/stat/app","127.0.0.1",$port));
+    die $res->status_line unless $res->is_success;
+    my $data = JSON->new->utf8->decode($res->content);
+    die "queue_max is undefined" unless $data->{'queue_max'};
+    metrix("gaurun_${port}.queue_usage.ratio", ($data->{'queue_usage'}||0)/$data->{'queue_max'}*100);
+}
+
+Getopt::Long::Configure ("no_ignore_case");
+my $r = GetOptions(
+    'port=s' => \my $port,
+    "h|help"   => \my $help,
+);
+
+if ( !$r || $help || !defined $port) {
+    print qq!usage: $0 --port=1056\n!;
+    exit($help ? 0 : 1);
+}
+
+if ( $ENV{MACKEREL_AGENT_PLUGIN_META} ) {
+    my $meta = {
+        "graphs" => {
+            "gaurun_${port}.queue_usage" => {
+                "label" => "gaurun($port) queue_usage/queue_max ratio",
+                "unit"  => 'float',
+                "metrics" => [
+                    {
+                        name => "ratio",
+                        label => "ratio",
+                        stacked => JSON::true,
+                    },
+                ]
+            },
+
+        }
+    };
+    plugin_meta($meta);
+
+}
+else {
+    gaurun_queue_usage($port);
+}

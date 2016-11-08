@@ -5,6 +5,8 @@ use warnings;
 use JSON;
 use LWP::UserAgent;
 use Getopt::Long;
+use File::Spec;
+use Storable;
 
 my $TIME = time;
 sub metrix {
@@ -24,9 +26,42 @@ sub gaurun_queue_usage {
     my $ua = LWP::UserAgent->new;
     my $res = $ua->get(sprintf("http://%s:%s/stat/app","127.0.0.1",$port));
     die $res->status_line unless $res->is_success;
-    my $data = JSON->new->utf8->decode($res->content);
-    die "queue_max is undefined" unless $data->{'queue_max'};
-    metrix("gaurun_${port}.queue_usage.ratio", ($data->{'queue_usage'}||0)/$data->{'queue_max'}*100);
+    my $cur = JSON->new->utf8->decode($res->content);
+    die "queue_max is undefined" unless $cur->{'queue_max'};
+    metrix("gaurun_${port}.queue_usage.ratio", ($cur->{'queue_usage'}||0)/$cur->{'queue_max'}*100);
+    metrix("gaurun_${port}.queue.max", $cur->{'queue_max'});
+    metrix("gaurun_${port}.queue.usage", $cur->{'queue_usage'}||0);
+
+    $cur->{_time_} = time();
+    my $prev_file = File::Spec->catfile(File::Spec->tmpdir,$<."-mackerel-plugin-gaurun-${port}.dat");
+    if ( ! -f $prev_file ) {
+        store($cur,$prev_file);
+        return;
+    }
+
+    my %gap;
+    my $prev = retrieve($prev_file);
+    if ( !$prev->{_time_} ) {
+        die "failed to retrieve _time_";
+    }
+    my $period = $cur->{_time_} - $prev->{_time_};
+    return unless $period;
+    foreach my $platform (qw/ios android/) {
+        foreach my $counter (qw/success error/) {
+            $gap{$platform."_".$counter} = ($cur->{$platform}->{"push_".$counter} || 0)
+                -  ($prev->{$platform}->{"push_".$counter} || 0);
+            # if the delta is negative, gaurun seems to be restart, so do not send it to mackerel.
+            if ( $gap{$platform."_".$counter} >= 0 ) {
+                metrix("gaurun_${port}.push_${platform}.${counter}", $gap{$platform."_".$counter}/$period);
+            }
+        }
+        if( $gap{$platform."_success"} >= 0 && $gap{$platform."_error"} >= 0) {
+            my $total = $gap{$platform."_success"}  + $gap{$platform."_error"};
+            my $ratio = ($total == 0) ? 1 : $gap{$platform."_success"} / $total;
+            metrix("gaurun_${port}.push_success_ratio.${platform}", $ratio*100);
+        }
+    }
+    store($cur,$prev_file);
 }
 
 Getopt::Long::Configure ("no_ignore_case");
@@ -54,7 +89,68 @@ if ( $ENV{MACKEREL_AGENT_PLUGIN_META} ) {
                     },
                 ]
             },
+            "gaurun_${port}.queue" => {
+                "label" => "gaurun($port) queue_usage and queue_max",
+                "unit"  => 'integer',
+                "metrics" => [
+                    {
+                        name => "usage",
+                        label => "usage",
+                    },
+                    {
+                        name => "max",
+                        label => "max",
+                    },
+                ]
+            },
+            "gaurun_${port}.push_ios" => {
+                "label" => "gaurun($port) push to ios/sec",
+                "unit"  => 'float',
+                "metrics" => [
+                    {
+                        name => "success",
+                        label => "success",
+                        stacked => JSON::true,
+                    },
+                    {
+                        name => "error",
+                        label => "error",
+                        stacked => JSON::true,
+                    },
 
+                ]
+            },
+            "gaurun_${port}.push_android" => {
+                "label" => "gaurun($port) push to android/sec",
+                "unit"  => 'float',
+                "metrics" => [
+                    {
+                        name => "success",
+                        label => "success",
+                        stacked => JSON::true,
+                    },
+                    {
+                        name => "error",
+                        label => "error",
+                        stacked => JSON::true,
+                    },
+
+                ]
+            },
+            "gaurun_${port}.push_success_ratio" => {
+                "label" => "gaurun($port) succeeded ratio of push notification",
+                "unit"  => 'float',
+                "metrics" => [
+                    {
+                        name => "ios",
+                        label => "ios",
+                    },
+                    {
+                        name => "android",
+                        label => "android",
+                    },
+                ]
+            },
         }
     };
     plugin_meta($meta);

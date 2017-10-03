@@ -47,17 +47,17 @@ sub plugin_meta {
     exit(0);
 }
 
+
+
 sub mailq {
-    (my $result,my $exit_code) = cap_cmd(["/usr/bin/mailq"]);
+    (my $result,my $exit_code) = cap_cmd(["find","-L","/var/spool/postfix","-ignore_readdir_race","-type","f"]);
     return if $exit_code != 0;
     my $queue = 0;
     for (split /\n/,$result) {
-        next if m!Mail queue is empty!;
-        $queue++ if m!^[0-9A-Z]!;
-    }
+        $queue++ unless m!/pid/!;
+    }   
     metrix("postfix.mailq.queue", $queue);
 }
-
 
 if ( $ENV{MACKEREL_AGENT_PLUGIN_META} ) {
     my $meta = {

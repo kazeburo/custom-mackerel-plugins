@@ -1,0 +1,46 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Time::HiRes;
+use Net::DNS::Lite;
+
+sub exit_with_msg {
+    my ($msg, $status) = @_;
+    print "$msg\n";
+    exit($status);
+}
+
+my $warnings = 2;
+my $critical = 2;
+Getopt::Long::Configure ("no_ignore_case");
+my $r = GetOptions(
+    'w=i'        => \$warnings,
+    'c=i'        => \$critical,
+    'host=s'   => \my $host,
+    "h|help"     => \my $help,
+);
+
+if ( !$r || $help || !defined $host) {
+    print qq!usage: $0 -w num -c num --host=production.example.service.us.consul\n!;
+    exit($help ? 0 : 1);
+}
+
+my $t0 = [Time::HiRes::gettimeofday];
+local $Net::DNS::Lite::resolver;
+my $ret = Net::DNS::Lite::inet_aton($host,30);
+my $elapsed = Time::HiRes::tv_interval ( $t0 );
+
+if (!$ret) {
+    exit_with_msg("CRITICAL: hosts not found in $elapsed sec",2);
+}
+$ret = Net::DNS::Lite::format_ipv4($ret);
+if ( $elapsed > $critical ) {
+    exit_with_msg("CRITICAL: elapsed_time $elapsed sec > $critical ($host IN A $ret)",2);
+}
+elsif ( $elapsed > $warnings ) {
+    exit_with_msg("WARNING: elapsed_time $elapsed sec > $warnings ($host IN A $ret)",1);
+}
+
+exit_with_msg("OK: elapsed_time $elapsed sec ($host IN A $ret)",0);

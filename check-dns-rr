@@ -3,6 +3,7 @@
 use strict;
 use warnings;
 use Getopt::Long;
+use Net::DNS::Lite;
 
 sub exit_with_msg {
     my ($msg, $status) = @_;
@@ -25,8 +26,9 @@ if ( !$r || $help || !defined $host) {
     exit($help ? 0 : 1);
 }
 
-my @h = gethostbyname($host);
-my $ret = @h - 4;
+my $dns = Net::DNS::Lite->new();
+my @r = $dns->resolve($host,'a');
+my $ret = @r;
 $ret = 0 if $ret < 0;
 
 if ( $ret < $critical ) {
@@ -37,4 +39,3 @@ elsif ( $ret < $warnings ) {
 }
 
 exit_with_msg("OK: $ret dns-rr hosts found",0);
-

@@ -48,6 +48,15 @@ sub uptime {
     $uptime;
 }
 
+sub has_chronyd {
+    my $processes = `ps -ef`;
+    my $proccnt = grep /chronyd/, $processes;
+    if ($proccnt == 1) {
+        return 1;
+    }
+    return 0;
+}
+
 my $TIME = time;
 sub metrix {
     my ($key,$val) = @_;
@@ -79,7 +88,8 @@ sub ntpq {
 }
 
 sub chronyc {
-    (my $result,my $exit_code) = cap_cmd(["/usr/bin/chronyc","-n","sources"]);
+    my $bin = -x "/usr/bin/chronyc" ? "/usr/bin/chronyc" : "/bin/chronyc";
+    (my $result,my $exit_code) = cap_cmd([$bin,"-n","sources"]);
     if ( $exit_code != 0 ) {
         return (0, -1);
     }
@@ -87,9 +97,9 @@ sub chronyc {
     my $synced = 0;
     my $offset;
     for (split /\n/,$result) {
-        if ( m!^\^\*\s*(?:\d+\.\d+\.\d+\.\d+|[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+).+?(\d+)(ns|us|ms|s)$! ) {
+        if ( m!^\^\*\s*(?:\d+\.\d+\.\d+\.\d+|[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+).+?\[(.+?)(ns|us|ms|s)\].+$! ) {
             $synced++;
-            $offset = $1;
+            $offset = abs($1*1);
             my $unit = $2;
             if ( $unit eq "ns" ) {
                 $offset = $offset / (1000 * 1000);
@@ -144,7 +154,7 @@ if ( $ENV{MACKEREL_AGENT_PLUGIN_META} ) {
     print encode_json($meta) . "\n";
 }
 else {
-    my ($synced, $offset) = -x "/usr/sbin/ntpq" ? ntpq() : chronyc();
+    my ($synced, $offset) = has_chronyd() ? chronyc() : ntpq();
     metrix("ntpq.synced.remote", $synced);
     metrix("ntpq.offset.seconds",$offset);
 }
